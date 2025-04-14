@@ -23,7 +23,7 @@ class ImageLoader(Dataset):
         self.transform = transform
         self.data = data
 
-        self.mask_generator = SamAutomaticMaskGenerator(sam_model_registry["vit_h"](checkpoint="sam_vit_h_4b8939.pth"))
+        self.mask_generator = SamAutomaticMaskGenerator(sam_model_registry["vit_h"](checkpoint="checkpoints/sam_vit_h_4b8939.pth"))
 
     def get_segmentation_mask(self, image):
         # Generate masks
@@ -62,6 +62,7 @@ class ImageLoader(Dataset):
         rgb = cv2.imread(data['rgb'])
         rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
         depth_map = cv2.imread(data['depth_map'], cv2.IMREAD_UNCHANGED) # should be a float32 array
+        depth_map = depth_map.astype(np.float32)
         
         segmentation_mask = self.get_segmentation_mask(rgb)
 
@@ -71,26 +72,28 @@ class ImageLoader(Dataset):
             self.transforms_all = A.Compose([
                 A.Resize(256, 256),
                 A.HorizontalFlip(p=0.5),
-                ToTensorV2()
+                A.Normalize(),
+                ToTensorV2(),
             ], additional_targets={'depth': 'image', 'noisy_depth': 'image', 'noise' : 'image', 'mask': 'mask'})
 
-            self.transforms_inputs_only = A.Compose([
-                A.Normalize(),
-            ], additional_targets={'noisy_depth': 'image', 'mask': 'mask'})
+            # self.transforms_inputs_only = A.Compose([
+            #     A.Normalize(),
+            # ], additional_targets={'noisy_depth': 'image', 'mask': 'mask'})
             
             augmented_1 = self.transforms_all(image=rgb, depth=depth_map, noisy_depth=noisy_depth_map, noise=noise, mask=segmentation_mask)
             rgb = augmented_1['image']
             depth_map = augmented_1['depth']
             noisy_depth_map = augmented_1['noisy_depth']
             noise = augmented_1['noise']
-            segmentation_mask = augmented_1['mask']
+            segmentation_mask = augmented_1['mask'].unsqueeze(0)
 
-            augmented_2 = self.transforms_inputs_only(image=rgb, depth=depth_map, noisy_depth=noisy_depth_map, noise=noise, mask=segmentation_mask)
-            rgb = augmented_2['image']
-            noisy_depth_map = augmented_2['noisy_depth']
-            segmentation_mask = augmented_2['mask']
+            # augmented_2 = self.transforms_inputs_only(image=rgb, depth=depth_map, noisy_depth=noisy_depth_map, noise=noise, mask=segmentation_mask)
+            # rgb = augmented_2['image']
+            # noisy_depth_map = augmented_2['noisy_depth']
+            # segmentation_mask = augmented_2['mask']
 
         #concat rgb noisy_depth_map segmentation_mask
+        # print(rgb.shape, noisy_depth_map.shape, segmentation_mask.shape)
         input_tensor = torch.cat((rgb, noisy_depth_map, segmentation_mask), dim=0)
         return input_tensor, {'depth': depth_map, 'noise':noise}
     
@@ -114,4 +117,10 @@ class DPCDataset():
     def get_dataset(self):
         return ImageLoader(self.data, transform=self.transform)
 
-obj = DPCDataset("datasets/rgbd-scenes-v2")
+# obj = DPCDataset("datasets/rgbd-scenes-v2")
+# trainset = obj.get_dataset()
+
+
+# print(trainset[0][0].shape)
+# print(trainset[0][1]['depth'].shape)
+# print(trainset[0][1]['noise'].shape)
