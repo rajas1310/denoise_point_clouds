@@ -18,12 +18,14 @@ from albumentations.pytorch import ToTensorV2
 # data_sample(5) : rgb, depth_map, noisy_depth_map, noise, segmentation_mask
 
 class ImageLoader(Dataset):
-    def __init__(self, data, transform=None):
+    def __init__(self, data, img_sz, transform=None):
         # self.data_dir = data_dir
         self.transform = transform
         self.data = data
+        self.img_sz = img_sz
 
-        self.mask_generator = SamAutomaticMaskGenerator(sam_model_registry["vit_h"](checkpoint="checkpoints/sam_vit_h_4b8939.pth"))
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.mask_generator = SamAutomaticMaskGenerator(sam_model_registry["vit_h"](checkpoint="checkpoints/sam_vit_h_4b8939.pth").to(device))
 
     def get_segmentation_mask(self, image):
         # Generate masks
@@ -70,7 +72,7 @@ class ImageLoader(Dataset):
 
         if self.transform: # todo transformation should be applied to the whole RGB, depth, segmap
             self.transforms_all = A.Compose([
-                A.Resize(256, 256),
+                A.Resize(self.img_sz, self.img_sz),
                 A.HorizontalFlip(p=0.5),
                 A.Normalize(),
                 ToTensorV2(),
@@ -85,21 +87,39 @@ class ImageLoader(Dataset):
             depth_map = augmented_1['depth']
             noisy_depth_map = augmented_1['noisy_depth']
             noise = augmented_1['noise']
-            segmentation_mask = augmented_1['mask'].unsqueeze(0)
+            segmentation_mask = augmented_1['mask']
 
             # augmented_2 = self.transforms_inputs_only(image=rgb, depth=depth_map, noisy_depth=noisy_depth_map, noise=noise, mask=segmentation_mask)
             # rgb = augmented_2['image']
             # noisy_depth_map = augmented_2['noisy_depth']
             # segmentation_mask = augmented_2['mask']
+        
+        if isinstance(rgb, np.ndarray):
+            rgb = torch.from_numpy(rgb).float()   # Ensure float type if needed
+        if isinstance(noisy_depth_map, np.ndarray):
+            noisy_depth_map = torch.from_numpy(noisy_depth_map).float()
+        if isinstance(segmentation_mask, np.ndarray):
+            segmentation_mask = torch.from_numpy(segmentation_mask).to(torch.uint16)
+
+        # Convert RGB from HWC to CHW if needed.
+        if rgb.dim() == 3 and rgb.shape[0] != 3:
+            # Assuming shape is HWC: [H, W, 3]
+            rgb = rgb.permute(2, 0, 1)
+
+        # Add a channel dimension to depth maps if needed.
+        if noisy_depth_map.dim() == 2:
+            noisy_depth_map = noisy_depth_map.unsqueeze(0)
+        if segmentation_mask.dim() == 2:
+            segmentation_mask = segmentation_mask.unsqueeze(0)
 
         #concat rgb noisy_depth_map segmentation_mask
-        # print(rgb.shape, noisy_depth_map.shape, segmentation_mask.shape)
         input_tensor = torch.cat((rgb, noisy_depth_map, segmentation_mask), dim=0)
-        return input_tensor, {'depth': depth_map, 'noise':noise}
+        return input_tensor, {'depth': depth_map, 'noise':noise, 'noisy_depth': noisy_depth_map}
     
 class DPCDataset():
-    def __init__(self, data_dir : str, transform : bool = True):
+    def __init__(self, data_dir : str, img_sz, transform : bool = True):
         self.data_dir = data_dir
+        self.img_sz = img_sz
         self.rgb_list, self.depth_list = self.get_rgbd_list()
         self.transform = transform
         self.data = [{'rgb': rgb_img, 'depth_map': depth_img} for rgb_img, depth_img in zip(self.rgb_list, self.depth_list)]
@@ -115,7 +135,7 @@ class DPCDataset():
         
     
     def get_dataset(self):
-        return ImageLoader(self.data, transform=self.transform)
+        return ImageLoader(self.data, self.img_sz, transform=self.transform)
 
 # obj = DPCDataset("datasets/rgbd-scenes-v2")
 # trainset = obj.get_dataset()
