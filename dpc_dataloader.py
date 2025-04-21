@@ -133,7 +133,7 @@ class ImageLoader(Dataset):
         return input_tensor, {'depth': depth_map, 'noise':noise, 'noisy_depth': noisy_depth_map}
     
 class DPCDataset():
-    def __init__(self, data_dir : str, img_sz):
+    def __init__(self, data_dir : str, img_sz, data_points=None):
         self.data_dir = data_dir
         self.img_sz = img_sz
         self.rgb_list, self.depth_list = self.get_rgbd_list()
@@ -141,6 +141,11 @@ class DPCDataset():
         self.data = [{'rgb': rgb_img, 'depth_map': depth_img, 'mask':label_mask} for rgb_img, depth_img, label_mask in zip(self.rgb_list, self.depth_list, self.segmentation_list)]
         self.train_data, self.val_data = self.split(ratio=0.8, random_state=42)
         print("Train data:", len(self.train_data), "Validation data:", len(self.val_data))
+
+        if data_points is not None:
+            self.train_data = self.train_data[:data_points]
+            self.val_data = self.val_data[:int(data_points*0.1)]
+            # print("Train data:", len(self.train_data), "Validation data:", len(self.val_data))
 
     def get_rgbd_list(self):
         rgb_list = glob.glob(os.path.join(self.data_dir, 'imgs/*/*-color.png'))
