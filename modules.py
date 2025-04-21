@@ -47,12 +47,13 @@ class SelfAttention(nn.Module):
         )
 
     def forward(self, x):
-        x = x.view(-1, self.channels, self.size * self.size).swapaxes(1, 2)
+        B, C, H, W = x.shape
+        x = x.view(B, C, H * W).permute(0, 2, 1)  # (B, H*W, C)
         x_ln = self.ln(x)
         attention_value, _ = self.mha(x_ln, x_ln, x_ln)
         attention_value = attention_value + x
         attention_value = self.ff_self(attention_value) + attention_value
-        return attention_value.swapaxes(2, 1).view(-1, self.channels, self.size, self.size)
+        return attention_value.permute(0, 2, 1).contiguous().view(B, C, H, W)
 
 
 class DoubleConv(nn.Module):
@@ -121,7 +122,9 @@ class Up(nn.Module):
 
     def forward(self, x, skip_x, t=None):
         x = self.up(x)
-        x = F.interpolate(x, size=skip_x.shape[2:], mode="bilinear", align_corners=True)
+        if skip_x.shape[2] != x.shape[2]:
+            print(f"Upsample: {x.shape} -> {skip_x.shape}")
+
         x = torch.cat([skip_x, x], dim=1)
         x = self.conv(x)
         if t is None:
@@ -277,9 +280,9 @@ class UNetDPC(nn.Module):
         self.up1 = Up(512, 128)
         self.sa4 = SelfAttention(128, 16)
         self.up2 = Up(256, 64)
-        self.sa5 = SelfAttention(64, 32)
+        # self.sa5 = SelfAttention(64, 32)
         self.up3 = Up(128, 64)
-        self.sa6 = SelfAttention(64, 64)
+        # self.sa6 = SelfAttention(64, 64)
         self.outc = nn.Conv2d(64, c_out, kernel_size=1)
 
     def pos_encoding(self, t, channels):
@@ -297,6 +300,7 @@ class UNetDPC(nn.Module):
         # t = self.pos_encoding(t, self.time_dim)
 
         x1 = self.inc(x)
+        # print("----------- x1: ", x1.shape)
         x2 = self.down1(x1)
         x2 = self.sa1(x2)
         x3 = self.down2(x2)
@@ -311,11 +315,32 @@ class UNetDPC(nn.Module):
         x = self.up1(x4, x3)
         x = self.sa4(x)
         x = self.up2(x, x2)
-        x = self.sa5(x)
+        # x = self.sa5(x)
         x = self.up3(x, x1)
-        x = self.sa6(x)
+        # x = self.sa6(x)
         output = self.outc(x)
         return output
+    
+    def load_model(self, checkpoint_path):
+        # Load your checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+        # If saved with model.state_dict()
+        state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
+
+        # Get model's current state dict
+        model_dict = self.state_dict()
+
+        # Filter out keys that don't match
+        filtered_dict = {k: v for k, v in state_dict.items() if k in model_dict and v.size() == model_dict[k].size()}
+
+        # Update model
+        model_dict.update(filtered_dict)
+        self.load_state_dict(model_dict)
+        print("Loaded model successfully")
+
+        skipped = {k: v for k, v in state_dict.items() if k not in model_dict or v.size() != model_dict[k].size()}
+        print("Skipped layers:", skipped.keys())        
 
 
 

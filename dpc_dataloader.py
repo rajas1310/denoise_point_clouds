@@ -18,9 +18,9 @@ from albumentations.pytorch import ToTensorV2
 # data_sample(5) : rgb, depth_map, noisy_depth_map, noise, segmentation_mask
 
 class ImageLoader(Dataset):
-    def __init__(self, data, img_sz, transform=None):
+    def __init__(self, data, img_sz, train=True):
         # self.data_dir = data_dir
-        self.transform = transform
+        self.train = train
         self.data = data
         self.img_sz = img_sz
 
@@ -30,8 +30,6 @@ class ImageLoader(Dataset):
     def get_segmentation_mask(self, image):
         # Generate masks
         masks = self.mask_generator.generate(image)
-
-        # Initialize label map (H x W) with 0s
         segmentation_map = np.zeros(image.shape[:2], dtype=np.uint16)
 
         # Assign a unique label to each mask
@@ -39,6 +37,11 @@ class ImageLoader(Dataset):
             segmentation_map[mask["segmentation"]] = i + 1  # Label starts from 1
 
         return segmentation_map
+    
+    def read_label_mask(self, label_mask_path):
+        # Load the label mask
+        label_mask = np.load(label_mask_path)
+        return label_mask
 
     def get_noisy_depth_map(self, depth_map, seed=0):
         scale = np.random.uniform(0.02, 0.1)  # Scale of the noise
@@ -66,12 +69,12 @@ class ImageLoader(Dataset):
         depth_map = cv2.imread(data['depth_map'], cv2.IMREAD_UNCHANGED) # should be a float32 array
         depth_map = depth_map.astype(np.float32)
         
-        segmentation_mask = self.get_segmentation_mask(rgb)
+        segmentation_mask = self.read_label_mask(data['mask'])
 
         noisy_depth_map, noise = self.get_noisy_depth_map(depth_map)
 
-        if self.transform: # todo transformation should be applied to the whole RGB, depth, segmap
-            self.transforms_all = A.Compose([
+        if self.train: # todo transformation should be applied to the whole RGB, depth, segmap
+            self.train_transforms = A.Compose([
                 A.Resize(self.img_sz, self.img_sz),
                 A.HorizontalFlip(p=0.5),
                 A.Normalize(),
@@ -82,17 +85,30 @@ class ImageLoader(Dataset):
             #     A.Normalize(),
             # ], additional_targets={'noisy_depth': 'image', 'mask': 'mask'})
             
-            augmented_1 = self.transforms_all(image=rgb, depth=depth_map, noisy_depth=noisy_depth_map, noise=noise, mask=segmentation_mask)
-            rgb = augmented_1['image']
-            depth_map = augmented_1['depth']
-            noisy_depth_map = augmented_1['noisy_depth']
-            noise = augmented_1['noise']
-            segmentation_mask = augmented_1['mask']
+            augmented_train = self.train_transforms(image=rgb, depth=depth_map, noisy_depth=noisy_depth_map, noise=noise, mask=segmentation_mask)
+            rgb = augmented_train['image']
+            depth_map = augmented_train['depth']
+            noisy_depth_map = augmented_train['noisy_depth']
+            noise = augmented_train['noise']
+            segmentation_mask = augmented_train['mask']
 
             # augmented_2 = self.transforms_inputs_only(image=rgb, depth=depth_map, noisy_depth=noisy_depth_map, noise=noise, mask=segmentation_mask)
             # rgb = augmented_2['image']
             # noisy_depth_map = augmented_2['noisy_depth']
             # segmentation_mask = augmented_2['mask']
+        else:
+            self.test_transforms = A.Compose([
+                A.Resize(self.img_sz, self.img_sz),
+                A.Normalize(),
+                ToTensorV2(),
+            ], additional_targets={'depth': 'image', 'noisy_depth': 'image', 'noise' : 'image', 'mask': 'mask'})
+            
+            augmented_test = self.test_transforms(image=rgb, depth=depth_map, noisy_depth=noisy_depth_map, noise=noise, mask=segmentation_mask)
+            rgb = augmented_test['image']
+            depth_map = augmented_test['depth']
+            noisy_depth_map = augmented_test['noisy_depth']
+            noise = augmented_test['noise']
+            segmentation_mask = augmented_test['mask']
         
         if isinstance(rgb, np.ndarray):
             rgb = torch.from_numpy(rgb).float()   # Ensure float type if needed
@@ -117,12 +133,14 @@ class ImageLoader(Dataset):
         return input_tensor, {'depth': depth_map, 'noise':noise, 'noisy_depth': noisy_depth_map}
     
 class DPCDataset():
-    def __init__(self, data_dir : str, img_sz, transform : bool = True):
+    def __init__(self, data_dir : str, img_sz):
         self.data_dir = data_dir
         self.img_sz = img_sz
         self.rgb_list, self.depth_list = self.get_rgbd_list()
-        self.transform = transform
-        self.data = [{'rgb': rgb_img, 'depth_map': depth_img} for rgb_img, depth_img in zip(self.rgb_list, self.depth_list)]
+        self.segmentation_list = self.get_segmentation_list()
+        self.data = [{'rgb': rgb_img, 'depth_map': depth_img, 'mask':label_mask} for rgb_img, depth_img, label_mask in zip(self.rgb_list, self.depth_list, self.segmentation_list)]
+        self.train_data, self.val_data = self.split(ratio=0.8, random_state=42)
+        print("Train data:", len(self.train_data), "Validation data:", len(self.val_data))
 
     def get_rgbd_list(self):
         rgb_list = glob.glob(os.path.join(self.data_dir, 'imgs/*/*-color.png'))
@@ -132,10 +150,25 @@ class DPCDataset():
         # print(len(rgb_list), "\n", rgb_list[:10])
         # print(len(depth_list), "\n", depth_list[:10])
         return rgb_list, depth_list
-        
     
+    def get_segmentation_list(self):
+        """ These are label masks generated by SAM (H,W,1) ; each pixel is a label """
+        segmentation_list = glob.glob(os.path.join(self.data_dir, 'imgs/*/label_masks/*.npy'))
+        segmentation_list.sort()
+        # print(len(segmentation_list), "\n", segmentation_list[:10])
+        return segmentation_list
+    
+    def split(self, ratio=0.8, random_state=42):
+        rng = np.random.default_rng(seed=random_state)  # creates a reproducible Random Number Generator
+        rng.shuffle(self.data)
+
+        split_idx = int(len(self.data) * ratio)
+        train_data = self.data[:split_idx]
+        val_data = self.data[split_idx:]
+        return train_data, val_data
+
     def get_dataset(self):
-        return ImageLoader(self.data, self.img_sz, transform=self.transform)
+        return ImageLoader(self.train_data, self.img_sz, train=True), ImageLoader(self.val_data, self.img_sz, train=False)
 
 # obj = DPCDataset("datasets/rgbd-scenes-v2")
 # trainset = obj.get_dataset()
