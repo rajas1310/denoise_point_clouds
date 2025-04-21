@@ -1,4 +1,10 @@
 datasets/
 checkpoints/
+runs/
+
 *.tar
 *.zip
+
+*.png
+*.jpg
+*.jpeg
