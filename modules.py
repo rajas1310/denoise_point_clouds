@@ -342,8 +342,6 @@ class UNetDPC(nn.Module):
         skipped = {k: v for k, v in state_dict.items() if k not in model_dict or v.size() != model_dict[k].size()}
         print("Skipped layers:", skipped.keys())        
 
-
-
 if __name__ == '__main__':
     # net = UNet(device="cpu")
     net = UNet_conditional(num_classes=10, device="cpu")
