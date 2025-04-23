@@ -1,6 +1,9 @@
 datasets/
 checkpoints/
 runs/
+wandb/
+models/
+
 
 *.tar
 *.zip
@@ -8,3 +11,7 @@ runs/
 *.png
 *.jpg
 *.jpeg
+*.gif
+*.mp4
+*.avi
+*.mov
